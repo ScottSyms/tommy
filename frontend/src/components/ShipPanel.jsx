@@ -5,7 +5,14 @@ function formatValue(value) {
   return value
 }
 
-function ShipPanel({ shipDetail, destinations, loading, selectionContext }) {
+function formatCell(value) {
+  if (value === null || value === undefined || value === '') {
+    return 'NULL'
+  }
+  return String(value)
+}
+
+function ShipPanel({ shipDetail, destinations, insight, loading, selectionContext }) {
   if (loading) {
     return (
       <div className="panel-card">
@@ -99,6 +106,42 @@ function ShipPanel({ shipDetail, destinations, loading, selectionContext }) {
           <p className="context-copy">No recent destinations available for this vessel.</p>
         )}
       </div>
+
+      {insight ? (
+        <div className="subpanel">
+          <div className="subpanel-header">
+            <h3>{insight.title}</h3>
+          </div>
+          <p className="context-copy">{insight.summary}</p>
+          {insight.generated_sql ? (
+            <>
+              <pre className="sql-block"><code>{insight.generated_sql}</code></pre>
+              {insight.result_preview?.columns?.length ? (
+                <div className="sql-preview-wrap">
+                  <table className="sql-preview-table">
+                    <thead>
+                      <tr>
+                        {insight.result_preview.columns.map((column) => (
+                          <th key={column}>{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {insight.result_preview.rows.map((row, index) => (
+                        <tr key={index}>
+                          {insight.result_preview.columns.map((column) => (
+                            <td key={column}>{formatCell(row[column])}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }

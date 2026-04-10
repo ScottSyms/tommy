@@ -359,6 +359,42 @@ body {
   text-align: right;
 }
 
+.sql-block {
+  margin: 0.9rem 0 0;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  background: #102a43;
+  color: #f0f4f8;
+  overflow: auto;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.sql-preview-wrap {
+  margin-top: 0.9rem;
+  overflow: auto;
+}
+
+.sql-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 360px;
+}
+
+.sql-preview-table th,
+.sql-preview-table td {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid #d9e2ec;
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.88rem;
+}
+
+.sql-preview-table th {
+  font-weight: 700;
+  color: #486581;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: 1fr;

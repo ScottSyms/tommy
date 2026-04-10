@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from backend.data.loader import get_ship_detail
+from backend.sql.service import SQLServiceError, run_sql_analytics
 from backend.tools.crud import add_position, get_merge_candidate, merge_positions
 from backend.tools.destinations import get_recent_destinations_tool
 from backend.tools.history import get_position_history
@@ -72,7 +73,7 @@ def run_agent_query(
             "payload": {"mmsi": subject_mmsi, "history": history},
         }
 
-    if is_destination_query(normalized):
+    if is_recent_destinations_query(normalized):
         if subject_mmsi is None:
             return clarify_missing_subject()
 
@@ -167,6 +168,17 @@ def run_agent_query(
             "payload": None,
         }
 
+    if should_route_to_sql(normalized, selection_context, chat_history):
+        try:
+            resolved_question = resolve_analytics_question(text, chat_history)
+            return run_sql_analytics(resolved_question, selection_context, chat_history)
+        except SQLServiceError as exc:
+            return {
+                "reply": f"I could not complete that analytics query: {exc}",
+                "action": None,
+                "payload": None,
+            }
+
     return {
         "reply": "I can identify a vessel, show its 24 hour track, list destinations, or help with a merge conflict.",
         "action": None,
@@ -193,6 +205,35 @@ def extract_coordinates(text: str) -> tuple[float, float] | None:
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         return None
     return lat, lon
+
+
+def extract_destination_name(text: str) -> str | None:
+    match = re.search(
+        r"\b(?:to|been to|visit|visited)\s+([a-zA-Z.'\-\s]+)\??$", text, re.IGNORECASE
+    )
+    if not match:
+        return None
+    return match.group(1).strip(" ?.!")
+
+
+def resolve_followup_destination(
+    chat_history: list[dict[str, Any]] | None,
+) -> str | None:
+    if not chat_history:
+        return None
+    for entry in chat_history:
+        if entry.get("role") != "user":
+            continue
+        destination_name = extract_destination_name(entry.get("text", ""))
+        if destination_name:
+            return destination_name
+    return None
+
+
+def format_time(timestamp: str | None) -> str:
+    if not timestamp:
+        return "an unknown time"
+    return timestamp.replace("T", " ").replace("+00:00", "Z")
 
 
 def clarify_missing_subject() -> dict[str, Any]:
@@ -223,8 +264,10 @@ def is_track_query(text: str) -> bool:
     return "last 24 hours" in text or "24 hour" in text or "24h" in text
 
 
-def is_destination_query(text: str) -> bool:
-    return "destination" in text
+def is_recent_destinations_query(text: str) -> bool:
+    return "destination" in text and (
+        "last" in text or "recent" in text or text.startswith("show")
+    )
 
 
 def is_add_query(text: str) -> bool:
@@ -241,6 +284,46 @@ def is_edit_query(text: str) -> bool:
 
 def is_delete_query(text: str) -> bool:
     return text.startswith("delete")
+
+
+def should_route_to_sql(
+    text: str,
+    selection_context: dict[str, Any] | None,
+    chat_history: list[dict[str, Any]] | None,
+) -> bool:
+    analytics_keywords = {
+        "been to",
+        "visited",
+        "when",
+        "fastest",
+        "top speed",
+        "max speed",
+        "how many",
+        "count",
+        "average",
+        "avg",
+        "most recent",
+        "first seen",
+    }
+    if any(keyword in text for keyword in analytics_keywords):
+        return True
+    if text.endswith("?"):
+        return True
+    if selection_context and chat_history:
+        return text in {"when", "when?", "how many", "how many times?"}
+    return False
+
+
+def resolve_analytics_question(
+    text: str, chat_history: list[dict[str, Any]] | None
+) -> str:
+    normalized = text.strip().lower()
+    destination_name = resolve_followup_destination(chat_history)
+    if normalized in {"when", "when?"} and destination_name:
+        return f"When was this ship at {destination_name}?"
+    if normalized in {"how many", "how many times?"} and destination_name:
+        return f"How many times has this ship been to {destination_name}?"
+    return text
 
 
 def serialize_position(position: dict[str, Any]) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import re
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -196,6 +197,65 @@ def get_ship_positions(mmsi: int) -> list[dict[str, Any]]:
     return compose_rows(mmsi, rows)
 
 
+def get_all_ship_positions() -> list[dict[str, Any]]:
+    rows = _read_records(
+        f"""
+        SELECT
+            position_id,
+            mmsi,
+            imo,
+            name,
+            call_sign,
+            ship_type,
+            flag,
+            length,
+            beam,
+            timestamp,
+            lat,
+            lon,
+            sog,
+            cog,
+            heading,
+            nav_status,
+            destination
+        FROM {_base_scan()}
+        ORDER BY mmsi, timestamp, position_id
+        """
+    )
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["mmsi"], []).append(row)
+
+    composed: list[dict[str, Any]] = []
+    for mmsi, ship_rows in grouped.items():
+        composed.extend(compose_rows(mmsi, ship_rows))
+    return composed
+
+
+def get_all_ship_identity() -> list[dict[str, Any]]:
+    latest_by_mmsi: dict[int, dict[str, Any]] = {}
+    for row in get_all_ship_positions():
+        latest_by_mmsi[row["mmsi"]] = row
+
+    identities = []
+    for row in latest_by_mmsi.values():
+        identities.append(
+            {
+                "mmsi": row["mmsi"],
+                "imo": row["imo"],
+                "name": row["name"],
+                "call_sign": row["call_sign"],
+                "ship_type": row["ship_type"],
+                "flag": row["flag"],
+                "length": row["length"],
+                "beam": row["beam"],
+            }
+        )
+    identities.sort(key=lambda row: row["mmsi"])
+    return identities
+
+
 def get_position_by_id(position_id: str) -> dict[str, Any] | None:
     overlay_row = overlay_position(position_id)
     if overlay_row is not None:
@@ -306,3 +366,99 @@ def get_recent_destinations(mmsi: int, limit: int) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def query_destination_history(mmsi: int, destination_query: str) -> dict[str, Any]:
+    positions = get_ship_positions(mmsi)
+    matches = []
+    for row in positions:
+        destination = row.get("destination")
+        if not destination:
+            continue
+        score = destination_match_score(destination_query, destination)
+        if score <= 0:
+            continue
+        matches.append(
+            {
+                "destination": destination,
+                "timestamp": row["timestamp"],
+                "score": score,
+            }
+        )
+
+    if not matches:
+        return {
+            "visited": False,
+            "query": destination_query,
+            "matched_destination": None,
+            "first_seen": None,
+            "last_seen": None,
+            "visit_count": 0,
+        }
+
+    matches.sort(key=lambda match: (match["score"], match["timestamp"]), reverse=True)
+    best_destination = matches[0]["destination"]
+    best_matches = [
+        match for match in matches if match["destination"] == best_destination
+    ]
+    best_matches.sort(key=lambda match: match["timestamp"])
+
+    return {
+        "visited": True,
+        "query": destination_query,
+        "matched_destination": best_destination,
+        "first_seen": best_matches[0]["timestamp"].isoformat(),
+        "last_seen": best_matches[-1]["timestamp"].isoformat(),
+        "visit_count": len(best_matches),
+    }
+
+
+def get_speed_extremes(mmsi: int) -> dict[str, Any] | None:
+    positions = get_ship_positions(mmsi)
+    if not positions:
+        return None
+
+    max_row = max(positions, key=lambda row: (row.get("sog") or 0.0, row["timestamp"]))
+    min_row = min(positions, key=lambda row: (row.get("sog") or 0.0, row["timestamp"]))
+    speed_values = [row.get("sog") or 0.0 for row in positions]
+
+    return {
+        "max_sog": max_row.get("sog") or 0.0,
+        "max_sog_timestamp": max_row["timestamp"].isoformat(),
+        "max_sog_position_id": max_row["position_id"],
+        "min_sog": min_row.get("sog") or 0.0,
+        "min_sog_timestamp": min_row["timestamp"].isoformat(),
+        "avg_sog": round(sum(speed_values) / len(speed_values), 2),
+    }
+
+
+def destination_match_score(query: str, destination: str) -> float:
+    normalized_query = normalize_destination(query)
+    normalized_destination = normalize_destination(destination)
+    if not normalized_query or not normalized_destination:
+        return 0.0
+    if normalized_query == normalized_destination:
+        return 1.0
+    if (
+        normalized_query in normalized_destination
+        or normalized_destination in normalized_query
+    ):
+        return 0.9
+
+    query_tokens = set(normalized_query.split())
+    destination_tokens = set(normalized_destination.split())
+    if query_tokens and query_tokens <= destination_tokens:
+        return 0.85
+
+    overlap = len(query_tokens & destination_tokens)
+    if overlap:
+        return overlap / max(len(query_tokens), len(destination_tokens))
+    return 0.0
+
+
+def normalize_destination(value: str) -> str:
+    normalized = value.lower().replace("st.", "saint ").replace("st ", "saint ")
+    normalized = normalized.replace("'", "")
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized

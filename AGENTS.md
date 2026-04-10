@@ -21,7 +21,7 @@ The architecture is intentionally **prototype-scoped**: no auth, no streaming, n
 | Map | MapLibre GL JS | Open-source, Tauri-compatible for Phase 5+ |
 | Frontend | React (Vite) | Lightweight; vanilla JS acceptable if preferred |
 | Backend | FastAPI (Python) | Async; tool-calling agent hosted here |
-| Agent | Claude via Anthropic SDK | Tool-use API; swap for local model later |
+| Agent | Provider-abstracted LLM backend | Start with OpenAI; keep the runtime interface generic enough to swap in Ollama, Anthropic, or another model later |
 | Speech-to-Text | `openai-whisper` (local) | `faster-whisper` recommended for speed |
 | TTS | Browser `speechSynthesis` | Phase 1; swap for Coqui/Piper in Phase 3 |
 | Storage | Parquet + DuckDB | DuckDB handles query pushdown without a DB server |
@@ -37,6 +37,18 @@ maritime-cop/
 ├── backend/
 │   ├── main.py                ← FastAPI app entry point
 │   ├── agent.py               ← Tool-calling agent logic
+│   ├── config.py              ← environment + provider settings
+│   ├── llm/
+│   │   ├── base.py            ← provider interface
+│   │   ├── factory.py         ← provider selection
+│   │   └── openai_provider.py ← first SQL-generation provider
+│   ├── sql/
+│   │   ├── analytics_skill.md ← app-level SQL skill/spec file
+│   │   ├── schema_registry.py ← approved query views + column metadata
+│   │   ├── prompt_builder.py  ← prompt assembly using skill + context
+│   │   ├── validator.py       ← SQL safety checks
+│   │   ├── executor.py        ← DuckDB SQL execution helpers
+│   │   └── service.py         ← SQL generation + execution pipeline
 │   ├── tools/
 │   │   ├── identity.py        ← get_ship_identity
 │   │   ├── history.py         ← get_position_history
@@ -147,6 +159,7 @@ def query_history(mmsi: int, hours: int) -> list[dict]:
 - Complete each phase with the smallest working slice that satisfies its test criteria
 - Defer optional polish until the next phase unless it is required to keep the demo coherent
 - Prefer deterministic UI logic for obvious commands like showing a selected ship or loading a 24h track; reserve the LLM for ambiguous or conversational requests
+- For exploratory analytics questions, prefer a guarded schema-registered text-to-SQL path behind `/agent/query` rather than expanding the deterministic router indefinitely
 
 ---
 
@@ -428,6 +441,22 @@ def query_history(mmsi: int, hours: int) -> list[dict]:
    - Ensure selection changes do not leave stale panel, track, or conflict state behind
    - Conflict resolution should refresh only the currently selected vessel
 
+8. **Schema-registered SQL analytics extension**
+   - Add an app-level SQL skill/spec file in Markdown, owned by the backend and independent of any single model provider
+   - Route exploratory analytics questions through the deterministic router first, then fall back to text-to-SQL when the request is not a known operational command
+   - Generated SQL must be shown visibly in the frontend along with a summarized result preview
+
+#### SQL Analytics Extension Guidelines
+
+- **Skill/spec artifact**: add `backend/sql/analytics_skill.md` with the approved views, column meanings, domain rules, SQL safety rules, output contract, and worked examples
+- **Stable semantic surface**: expose only backend-owned analytical views such as `cop_ship_positions`, `cop_ship_identity`, and `cop_latest_ship_positions`; never expose raw Parquet paths to the model
+- **Provider abstraction**: all model calls should go through a provider interface so OpenAI can be swapped out for Ollama, Anthropic, or another model later without changing `/agent/query`
+- **Config model**: load provider choice, model name, and API credentials from environment-backed backend config rather than hardcoding a vendor in the agent logic
+- **Fallback routing**: deterministic command handling remains first; text-to-SQL is the fallback for ad-hoc analytics like destination history, counts, extrema, and timing follow-ups
+- **SQL validation**: allow only read-only `SELECT` or `WITH ... SELECT`, one statement, approved views only, and bounded result sets; reject DDL/DML and unsafe keywords before execution
+- **Visible SQL**: frontend insight payloads should include generated SQL and a small result preview so analysts can inspect how the answer was derived
+- **Follow-up context**: use recent chat turns plus selection context to resolve follow-ups like `When?`, `How many times?`, and `What was the max?` before building the SQL prompt
+
 #### Phase 5 Test Criteria
 - [ ] All 8 COP grammar commands invoke the correct tool
 - [ ] Viewport-filtered ship load < 200ms for typical zoom level
@@ -436,6 +465,8 @@ def query_history(mmsi: int, hours: int) -> list[dict]:
 - [ ] Conflict resolution refreshes the visible selected track
 - [ ] Viewport filtering triggers on `moveend` without spamming requests during pan/zoom
 - [ ] Browser demo path is manually verified end-to-end
+- [ ] Ad-hoc analytics questions can fall back to schema-registered SQL generation without breaking deterministic operational commands
+- [ ] Generated SQL is shown visibly in the ShipPanel along with a result preview
 
 ---
 
@@ -455,6 +486,10 @@ POST   /positions               → { position_id }
 PUT    /positions/{id}          → updated Position
 DELETE /positions/{id}          → { deleted: true }
 POST   /positions/merge         → merged Position | ConflictReport
+
+# optional internal analytics shape returned via /agent/query payload
+payload.insight.generated_sql   → generated SQL string for analyst inspection
+payload.insight.result_preview  → small tabular preview of SQL results
 ```
 
 ### Example: `GET /ships/{mmsi}`
@@ -590,6 +625,8 @@ All non-2xx API responses should return a predictable error shape:
 - **Duplicate timestamps**: seeded duplicates are for conflict testing. Phase 2 track rendering should use deterministic ordering only; visual conflict handling belongs to Phase 4.
 - **Agent architecture**: the current implementation may use a deterministic router behind `/agent/query`. Treat LLM-backed tool-calling as a later backend swap unless Phase 5 explicitly adds it.
 - **Demo seed requirement**: keep at least one duplicate timestamp per MMSI within the last 24 hours so the conflict demo remains testable.
+- **Text-to-SQL safety**: raw SQL generation is flexible but must be constrained by approved analytical views, strict validation, and execution limits before it touches DuckDB.
+- **Prompt portability**: keep the SQL skill/spec file provider-agnostic so the same backend-owned instructions can be reused across OpenAI, Ollama, Anthropic, or later local models.
 
 ---
 

@@ -22,6 +22,7 @@ function App() {
   const [shipDetail, setShipDetail] = useState(null)
   const [track, setTrack] = useState(EMPTY_TRACK)
   const [destinations, setDestinations] = useState([])
+  const [insight, setInsight] = useState(null)
   const [shipsBbox, setShipsBbox] = useState(null)
   const [loadingShips, setLoadingShips] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
@@ -93,6 +94,7 @@ function App() {
         setShipDetail(null)
         setTrack(EMPTY_TRACK)
         setDestinations([])
+        setInsight(null)
         setLoadingDetail(false)
         setLoadingTrack(false)
         return
@@ -116,6 +118,7 @@ function App() {
         setShipDetail(detail)
         setTrack({ type: 'FeatureCollection', features: [history.track] })
         setDestinations(recentDestinations)
+        setInsight(null)
         setError('')
       } catch (loadError) {
         if (!active) {
@@ -125,6 +128,7 @@ function App() {
         setShipDetail(null)
         setTrack(EMPTY_TRACK)
         setDestinations([])
+        setInsight(null)
         setError(loadError.message)
       } finally {
         if (active) {
@@ -210,6 +214,11 @@ function App() {
       if (payload.destinations) {
         setDestinations(payload.destinations)
       }
+      if (payload.insight) {
+        setInsight(payload.insight)
+      } else if (payload.ship_detail || payload.destinations) {
+        setInsight(null)
+      }
     }
 
     if (action === 'SHOW_CONFLICT') {
@@ -294,6 +303,7 @@ function App() {
         <ShipPanel
           shipDetail={shipDetail}
           destinations={destinations}
+          insight={insight}
           loading={loadingDetail}
           selectionContext={selectionContext}
         />
