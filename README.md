@@ -2,7 +2,7 @@
 
 Prototype maritime common operating picture with a MapLibre frontend, FastAPI backend, synthetic AIS seed data, local Whisper transcription, and a deterministic assistant loop for map-aware vessel queries.
 
-![Maritime COP Screenshot](docs/screenshot.png)
+![Maritime COP Screenshot](docs/screenshot.jpg)
 
 The current release voice is Piper `en_US-ryan-high`, stored under `models/` and served through the backend `/voice/speak` endpoint.
 
