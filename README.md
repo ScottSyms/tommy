@@ -2,12 +2,17 @@
 
 Prototype maritime common operating picture with a MapLibre frontend, FastAPI backend, synthetic AIS seed data, local Whisper transcription, and a deterministic assistant loop for map-aware vessel queries.
 
+![Maritime COP Screenshot](docs/screenshot.png)
+
+The current release voice is Piper `en_US-ryan-high`, stored under `models/` and served through the backend `/voice/speak` endpoint.
+
 ## Stack
 
 - Frontend: React + Vite + MapLibre GL JS
 - Backend: FastAPI
 - Storage: Parquet + DuckDB
 - Voice transcription: `faster-whisper`
+- Voice synthesis: `piper`
 - Local package tools: `pnpm`, `uv`
 
 ## Project Layout
@@ -34,6 +39,8 @@ AGENTS.md  Implementation plan and phase guide
 uv venv .venv
 uv pip install --python ".venv/bin/python" -r backend/requirements.txt
 ```
+
+If Piper is installed in the shared workspace environment instead of the project venv, set `PIPER_COMMAND` in `.env` to that executable path.
 
 ### Frontend
 
@@ -68,6 +75,21 @@ pnpm dev
 
 The frontend defaults to `http://127.0.0.1:8000`. To point at a different backend, set `VITE_API_BASE_URL`.
 
+### Piper Voice
+
+The checked-in default voice is Ryan:
+
+```env
+PIPER_MODEL_PATH=models/en_US-ryan-high.onnx
+PIPER_CONFIG_PATH=models/en_US-ryan-high.onnx.json
+```
+
+If the backend cannot resolve `piper` from its runtime environment, also set:
+
+```env
+PIPER_COMMAND=/absolute/path/to/piper
+```
+
 ## Demo Flow
 
 1. Open `http://localhost:5173`.
@@ -81,6 +103,7 @@ The frontend defaults to `http://127.0.0.1:8000`. To point at a different backen
    - `Merge these two tracks`
 6. Resolve the conflict panel with `Keep Most Recent`.
 7. Confirm the transcript rail updates and the selected track refreshes.
+8. Confirm agent replies play through the Ryan Piper voice.
 
 ## API Summary
 
@@ -95,6 +118,7 @@ The frontend defaults to `http://127.0.0.1:8000`. To point at a different backen
 ### Voice + Agent
 
 - `POST /voice/transcribe`
+- `POST /voice/speak`
 - `POST /agent/query`
 
 ### Overlay CRUD
