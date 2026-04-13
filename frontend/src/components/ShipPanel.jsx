@@ -26,7 +26,7 @@ function ShipPanel({ shipDetail, destinations, insight, loading, selectionContex
     return (
       <div className="panel-card">
         <h2>Ship Detail</h2>
-        <p>Select a vessel on the map to inspect its identity, 24h track, and recent destinations.</p>
+        <p>Select a vessel on the map to inspect its identity, last known position, and recent destinations.</p>
       </div>
     )
   }
@@ -113,32 +113,27 @@ function ShipPanel({ shipDetail, destinations, insight, loading, selectionContex
             <h3>{insight.title}</h3>
           </div>
           <p className="context-copy">{insight.summary}</p>
-          {insight.generated_sql ? (
-            <>
-              <pre className="sql-block"><code>{insight.generated_sql}</code></pre>
-              {insight.result_preview?.columns?.length ? (
-                <div className="sql-preview-wrap">
-                  <table className="sql-preview-table">
-                    <thead>
-                      <tr>
-                        {insight.result_preview.columns.map((column) => (
-                          <th key={column}>{column}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {insight.result_preview.rows.map((row, index) => (
-                        <tr key={index}>
-                          {insight.result_preview.columns.map((column) => (
-                            <td key={column}>{formatCell(row[column])}</td>
-                          ))}
-                        </tr>
+          {insight.result_preview?.columns?.length ? (
+            <div className="sql-preview-wrap">
+              <table className="sql-preview-table">
+                <thead>
+                  <tr>
+                    {insight.result_preview.columns.map((column) => (
+                      <th key={column}>{column}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {insight.result_preview.rows.map((row, index) => (
+                    <tr key={index}>
+                      {insight.result_preview.columns.map((column) => (
+                        <td key={column}>{formatCell(row[column])}</td>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
-            </>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ) : null}
         </div>
       ) : null}

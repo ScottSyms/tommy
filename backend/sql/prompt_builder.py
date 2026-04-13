@@ -13,6 +13,7 @@ def build_sql_prompts(
     question: str,
     selection_context: dict[str, Any] | None,
     chat_history: list[dict[str, Any]] | None,
+    conversation_memory: dict[str, Any] | None,
 ) -> tuple[str, str]:
     skill_text = SKILL_PATH.read_text(encoding="utf-8")
     system_prompt = f"{skill_text}\n\n## Registered Schema\n{schema_summary()}"
@@ -27,10 +28,12 @@ def build_sql_prompts(
     )
 
     selection_text = selection_context or {}
+    memory_text = conversation_memory or {}
     user_prompt = (
         "Generate SQL for the resolved maritime analytics request.\n"
         f"Current question: {question}\n"
         f"Selection context: {selection_text}\n"
+        f"Conversation memory: {memory_text}\n"
         f"Recent chat turns:\n{turns_text}\n"
     )
     return system_prompt, user_prompt

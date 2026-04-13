@@ -6,6 +6,7 @@ import {
   fetchShips,
   mergePositions,
   queryAgent,
+  speakText,
 } from './api'
 import ConflictPanel from './components/ConflictPanel'
 import Map from './components/Map'
@@ -16,11 +17,21 @@ import useSelection from './hooks/useSelection'
 import useVoice from './hooks/useVoice'
 
 const EMPTY_TRACK = { type: 'FeatureCollection', features: [] }
+const EMPTY_MEMORY = {
+  active_vessel: null,
+  last_question: null,
+  last_assistant_reply: null,
+  last_analytics_question: null,
+  last_analytics_summary: null,
+  last_destination: null,
+  last_action: null,
+}
 
 function App() {
   const [ships, setShips] = useState({ type: 'FeatureCollection', features: [] })
   const [shipDetail, setShipDetail] = useState(null)
   const [track, setTrack] = useState(EMPTY_TRACK)
+  const [activeTrackMmsi, setActiveTrackMmsi] = useState(null)
   const [destinations, setDestinations] = useState([])
   const [insight, setInsight] = useState(null)
   const [shipsBbox, setShipsBbox] = useState(null)
@@ -31,9 +42,12 @@ function App() {
   const [conflictState, setConflictState] = useState(null)
   const [resolvingConflict, setResolvingConflict] = useState(false)
   const [chatHistory, setChatHistory] = useState([])
+  const [conversationMemory, setConversationMemory] = useState(EMPTY_MEMORY)
   const [error, setError] = useState('')
   const [selectionVersion, setSelectionVersion] = useState(0)
   const chatHistoryRef = useRef([])
+  const audioRef = useRef(null)
+  const audioUrlRef = useRef(null)
   const { selectedMMSI, select, deselect, selectionContext } = useSelection(shipDetail)
   const {
     isRecording,
@@ -53,6 +67,40 @@ function App() {
   useEffect(() => {
     chatHistoryRef.current = chatHistory
   }, [chatHistory])
+
+  useEffect(() => {
+    return () => {
+      stopReplyAudio()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!selectedMMSI) {
+      setConversationMemory((current) => ({
+        ...current,
+        active_vessel: null,
+      }))
+      setTrack(EMPTY_TRACK)
+      setActiveTrackMmsi(null)
+      return
+    }
+
+    setInsight(null)
+  }, [selectedMMSI])
+
+  useEffect(() => {
+    if (!shipDetail?.identity) {
+      return
+    }
+
+    setConversationMemory((current) => ({
+      ...current,
+      active_vessel: {
+        mmsi: shipDetail.identity.mmsi,
+        name: shipDetail.identity.name,
+      },
+    }))
+  }, [shipDetail])
 
   useEffect(() => {
     let active = true
@@ -93,6 +141,7 @@ function App() {
       if (!selectedMMSI) {
         setShipDetail(null)
         setTrack(EMPTY_TRACK)
+        setActiveTrackMmsi(null)
         setDestinations([])
         setInsight(null)
         setLoadingDetail(false)
@@ -101,13 +150,11 @@ function App() {
       }
 
       setLoadingDetail(true)
-      setLoadingTrack(true)
-      setTrack(EMPTY_TRACK)
+      setLoadingTrack(false)
 
       try {
-        const [detail, history, recentDestinations] = await Promise.all([
+        const [detail, recentDestinations] = await Promise.all([
           fetchShipDetail(selectedMMSI),
-          fetchShipHistory(selectedMMSI, 24),
           fetchShipDestinations(selectedMMSI, 5),
         ])
 
@@ -116,7 +163,6 @@ function App() {
         }
 
         setShipDetail(detail)
-        setTrack({ type: 'FeatureCollection', features: [history.track] })
         setDestinations(recentDestinations)
         setInsight(null)
         setError('')
@@ -152,6 +198,20 @@ function App() {
     setChatHistory((current) => [entry, ...current].slice(0, 20))
   }
 
+  function handleSelectShip(mmsi) {
+    setTrack(EMPTY_TRACK)
+    setActiveTrackMmsi(null)
+    setInsight(null)
+    select(mmsi)
+  }
+
+  function updateConversationMemory(updates) {
+    setConversationMemory((current) => ({
+      ...current,
+      ...updates,
+    }))
+  }
+
   function buildChatEntry(role, text, extra = {}) {
     return {
       id: crypto.randomUUID(),
@@ -164,6 +224,14 @@ function App() {
 
   async function runAgent(transcript, userEntry) {
     setAgentBusy(true)
+    const requestMemory = {
+      ...conversationMemory,
+      last_question: transcript,
+      last_destination:
+        extractDestinationReference(transcript) ?? conversationMemory.last_destination,
+    }
+    updateConversationMemory(requestMemory)
+
     try {
       const response = await queryAgent({
         transcript,
@@ -179,16 +247,21 @@ function App() {
           text: entry.text,
           timestamp: entry.timestamp,
         })),
+        conversation_memory: requestMemory,
       })
 
       const assistantEntry = buildChatEntry('assistant', response.reply)
       appendChatEntry(assistantEntry)
-      speakReply(response.reply)
+      syncConversationMemory(response, transcript)
+      void speakReply(response.reply)
       applyAgentAction(response.action, response.payload)
     } catch (agentError) {
       const reply = agentError.message || 'The assistant could not complete that request.'
       appendChatEntry(buildChatEntry('assistant', reply))
-      speakReply(reply)
+      updateConversationMemory({
+        last_assistant_reply: reply,
+      })
+      void speakReply(reply)
     } finally {
       setAgentBusy(false)
     }
@@ -204,7 +277,9 @@ function App() {
     }
 
     if (action === 'SHOW_TRACK' && payload.history?.track) {
+      setLoadingTrack(false)
       setTrack({ type: 'FeatureCollection', features: [payload.history.track] })
+      setActiveTrackMmsi(payload.mmsi ?? selectedMMSI)
     }
 
     if (action === 'SHOW_PANEL') {
@@ -226,12 +301,78 @@ function App() {
     }
   }
 
-  function speakReply(text) {
-    if (!window.speechSynthesis || !text) {
+  function syncConversationMemory(response, transcript) {
+    const nextMemory = {
+      last_assistant_reply: response.reply,
+      last_action: response.action,
+    }
+
+    if (response.payload?.mmsi) {
+      nextMemory.active_vessel = {
+        mmsi: response.payload.mmsi,
+        name:
+          response.payload.ship_detail?.identity?.name ??
+          selectionContext?.name ??
+          conversationMemory.active_vessel?.name ??
+          null,
+      }
+    }
+
+    if (response.payload?.insight?.summary) {
+      nextMemory.last_analytics_question = transcript
+      nextMemory.last_analytics_summary = response.payload.insight.summary
+    }
+
+    const destination = extractDestinationReference(transcript) ?? conversationMemory.last_destination
+    if (destination) {
+      nextMemory.last_destination = destination
+    }
+
+    updateConversationMemory(nextMemory)
+  }
+
+  async function speakReply(text) {
+    if (!text) {
       return
     }
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))
+
+    try {
+      stopReplyAudio()
+      const audioBlob = await speakText(text)
+      const audioUrl = URL.createObjectURL(audioBlob)
+      const audio = new Audio(audioUrl)
+      audioRef.current = audio
+      audioUrlRef.current = audioUrl
+      audio.addEventListener(
+        'ended',
+        () => {
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          if (audioUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrl)
+            audioUrlRef.current = null
+          }
+        },
+        { once: true },
+      )
+      await audio.play()
+    } catch (speechError) {
+      console.warn('Piper playback unavailable:', speechError)
+    }
+  }
+
+  function stopReplyAudio() {
+    const audio = audioRef.current
+    if (audio) {
+      audio.pause()
+      audio.currentTime = 0
+      audioRef.current = null
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
   }
 
   async function handleResolveConflict(resolution) {
@@ -248,13 +389,22 @@ function App() {
       })
       setConflictState(null)
       refreshSelectionData()
-      const reply = 'Resolved the conflict and refreshed the selected track.'
+      if (selectedMMSI && activeTrackMmsi === selectedMMSI) {
+        setLoadingTrack(true)
+        const history = await fetchShipHistory(selectedMMSI, 24)
+        setTrack({ type: 'FeatureCollection', features: [history.track] })
+        setLoadingTrack(false)
+      }
+      const reply =
+        activeTrackMmsi === selectedMMSI
+          ? 'Resolved the conflict and refreshed the selected track.'
+          : 'Resolved the conflict and refreshed the selected vessel.'
       appendChatEntry(buildChatEntry('assistant', reply))
-      speakReply(reply)
+      void speakReply(reply)
     } catch (mergeError) {
       const reply = mergeError.message || 'The conflict could not be resolved.'
       appendChatEntry(buildChatEntry('assistant', reply))
-      speakReply(reply)
+      void speakReply(reply)
     } finally {
       setResolvingConflict(false)
     }
@@ -271,7 +421,15 @@ function App() {
           <div className="status-group">
             <span>{loadingShips ? 'Loading ships...' : `${ships.features.length} ships loaded`}</span>
             {selectedMMSI ? <span>Selected MMSI {selectedMMSI}</span> : <span>No ship selected</span>}
-            <span>{loadingTrack ? 'Loading 24h track...' : track.features.length ? '24h track active' : 'No track loaded'}</span>
+            <span>
+              {loadingTrack
+                ? 'Loading track...'
+                : track.features.length
+                  ? 'Track loaded'
+                  : selectedMMSI
+                    ? 'Last known position loaded'
+                    : 'No track loaded'}
+            </span>
             <span>{agentBusy ? 'Assistant working...' : 'Assistant idle'}</span>
             <button type="button" className="secondary-button" onClick={deselect} disabled={!selectedMMSI}>
               Clear selection
@@ -282,7 +440,7 @@ function App() {
         <Map
           ships={ships}
           track={track}
-          onSelectShip={select}
+          onSelectShip={handleSelectShip}
           onDeselect={deselect}
           onViewportChange={setShipsBbox}
           selectedMmsi={selectedMMSI}
@@ -316,6 +474,11 @@ function App() {
       />
     </div>
   )
+}
+
+function extractDestinationReference(text) {
+  const match = text.match(/\b(?:to|been to|visit|visited)\s+([a-zA-Z.'\-\s]+)\??$/i)
+  return match ? match[1].trim().replace(/[?.!]+$/, '') : null
 }
 
 export default App

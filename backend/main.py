@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -19,6 +19,7 @@ from backend.tools.crud import (
     merge_positions,
 )
 from backend.voice.transcribe import TranscriptionError, transcribe_audio
+from backend.voice.speak import SpeechSynthesisError, synthesize_speech
 
 
 app = FastAPI(title="Maritime COP Prototype", version="0.1.0")
@@ -29,6 +30,7 @@ class AgentQueryRequest(BaseModel):
     transcript: str
     selection_context: dict | None = None
     chat_history: list[dict] = Field(default_factory=list)
+    conversation_memory: dict | None = None
 
 
 class MergeRequest(BaseModel):
@@ -46,6 +48,10 @@ class PositionCreateRequest(BaseModel):
 
 class PositionUpdateRequest(BaseModel):
     updates: dict
+
+
+class SpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
 
 
 app.add_middleware(
@@ -102,6 +108,22 @@ async def voice_transcribe(audio: UploadFile = File(...)) -> dict:
         ) from exc
 
 
+@app.post("/voice/speak")
+async def voice_speak(request: SpeechRequest) -> Response:
+    try:
+        audio_bytes = synthesize_speech(request.text)
+        return Response(content=audio_bytes, media_type="audio/wav")
+    except SpeechSynthesisError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=error_response(
+                "speech_synthesis_failed",
+                str(exc),
+                "Install Piper locally and configure the Piper model path before retrying.",
+            ),
+        ) from exc
+
+
 @app.post("/agent/query")
 async def agent_query(request: AgentQueryRequest) -> dict:
     try:
@@ -109,6 +131,7 @@ async def agent_query(request: AgentQueryRequest) -> dict:
             request.transcript,
             request.selection_context,
             request.chat_history[-6:],
+            request.conversation_memory,
         )
     except DataNotLoadedError as exc:
         raise HTTPException(

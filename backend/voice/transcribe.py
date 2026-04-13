@@ -8,7 +8,11 @@ from typing import Any
 from faster_whisper import WhisperModel
 
 
-MODEL_NAME = "base.en"
+MODEL_NAME = "small.en"
+INITIAL_PROMPT = (
+    "This is a maritime common operating picture discussion about AIS vessels, "
+    "MMSI, Halifax, destinations, latitude, longitude, knots, headings, and courses."
+)
 _MODEL: WhisperModel | None = None
 _MODEL_LOCK = Lock()
 
@@ -38,7 +42,14 @@ def transcribe_audio(audio_bytes: bytes, suffix: str = ".webm") -> dict[str, Any
             temp_path = Path(temp_audio.name)
 
         segments, info = model.transcribe(
-            str(temp_path), vad_filter=True, language="en"
+            str(temp_path),
+            vad_filter=True,
+            language="en",
+            beam_size=5,
+            best_of=5,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            initial_prompt=INITIAL_PROMPT,
         )
         transcript_parts: list[str] = []
         segment_scores: list[float] = []

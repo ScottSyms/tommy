@@ -57,6 +57,8 @@ Generate a single read-only SQL query for maritime analytics questions against a
 - Never output prose outside a fenced SQL block.
 - Never reference raw Parquet paths, temp files, or internal tables.
 - Only use approved views listed above.
+- If the query uses more than one relation in `FROM` or `JOIN`, give each relation an alias and qualify every selected, filtered, grouped, and ordered column with that alias.
+- Never use bare column names like `mmsi`, `timestamp`, `lat`, `lon`, `name`, or `destination` after introducing a second relation.
 - Always include a bounded result set with `LIMIT` unless the query is guaranteed to return one row through aggregation.
 
 ## Output Contract
@@ -113,6 +115,22 @@ SELECT
 FROM cop_ship_positions
 WHERE mmsi = 316000000
   AND destination_normalized LIKE '%halifax%';
+```
+
+### Show the latest position with vessel identity
+
+```sql
+SELECT
+  lp.mmsi,
+  id.name,
+  lp.timestamp,
+  lp.lat,
+  lp.lon,
+  lp.destination
+FROM cop_latest_ship_positions AS lp
+JOIN cop_ship_identity AS id ON id.mmsi = lp.mmsi
+WHERE lp.mmsi = 316000000
+LIMIT 1;
 ```
 
 ## Follow-up Resolution Notes

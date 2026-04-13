@@ -15,6 +15,21 @@ export async function request(path, options = {}) {
   return response.json()
 }
 
+export async function requestAudio(path, options = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, options)
+  if (!response.ok) {
+    let payload
+    try {
+      payload = await response.json()
+    } catch {
+      throw new Error(`Request failed with status ${response.status}`)
+    }
+    const detail = payload.detail ?? payload
+    throw new Error(detail.message ?? `Request failed with status ${response.status}`)
+  }
+  return response.blob()
+}
+
 export function fetchShips(bbox) {
   if (!bbox) {
     return request('/ships')
@@ -42,6 +57,16 @@ export function transcribeAudio(audioBlob) {
   return request('/voice/transcribe', {
     method: 'POST',
     body: formData,
+  })
+}
+
+export function speakText(text) {
+  return requestAudio('/voice/speak', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ text }),
   })
 }
 

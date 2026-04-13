@@ -31,13 +31,14 @@ def run_agent_query(
     transcript: str,
     selection_context: dict[str, Any] | None,
     chat_history: list[dict[str, Any]] | None,
+    conversation_memory: dict[str, Any] | None,
 ) -> dict[str, Any]:
     text = transcript.strip()
     if not text:
         return {"reply": "I did not catch that.", "action": None, "payload": None}
 
     normalized = text.lower()
-    subject_mmsi = resolve_subject_mmsi(text, selection_context)
+    subject_mmsi = resolve_subject_mmsi(text, selection_context, conversation_memory)
 
     if is_identity_query(normalized):
         if subject_mmsi is None:
@@ -49,9 +50,12 @@ def run_agent_query(
 
         identity = get_ship_identity(subject_mmsi)
         last_position = detail["last_position"]
+        vessel_name = vessel_label(
+            identity=identity, selection_context=selection_context
+        )
         reply = (
-            f"{identity['name'] or 'The selected vessel'} is MMSI {subject_mmsi}, "
-            f"flagged {identity['flag'] or 'unknown'}, currently making {last_position['sog']} knots."
+            f"{vessel_name} is flagged {identity['flag'] or 'unknown'} and is currently making "
+            f"{last_position['sog']} knots."
         )
         return {
             "reply": reply,
@@ -67,8 +71,14 @@ def run_agent_query(
         if history is None:
             return not_found_reply(subject_mmsi)
 
+        detail = get_ship_detail(subject_mmsi)
+        vessel_name = vessel_label(
+            identity=detail["identity"] if detail else None,
+            selection_context=selection_context,
+        )
+
         return {
-            "reply": "Showing the last 24 hours for the selected vessel.",
+            "reply": f"I’m showing the last 24 hours for {vessel_name}.",
             "action": "SHOW_TRACK",
             "payload": {"mmsi": subject_mmsi, "history": history},
         }
@@ -81,9 +91,14 @@ def run_agent_query(
         if not destinations:
             return not_found_reply(subject_mmsi)
 
+        detail = get_ship_detail(subject_mmsi)
+        vessel_name = vessel_label(
+            identity=detail["identity"] if detail else None,
+            selection_context=selection_context,
+        )
         latest_names = ", ".join(entry["destination"] for entry in destinations[:3])
         return {
-            "reply": f"Showing the last destinations for this vessel. Recent ports include {latest_names}.",
+            "reply": f"Here are the latest destinations for {vessel_name}. Recent ports include {latest_names}.",
             "action": "SHOW_PANEL",
             "payload": {"mmsi": subject_mmsi, "destinations": destinations},
         }
@@ -113,8 +128,13 @@ def run_agent_query(
             }
 
         position = add_position(subject_mmsi, lat, lon, timestamp)
+        detail = get_ship_detail(subject_mmsi)
+        vessel_name = vessel_label(
+            identity=detail["identity"] if detail else None,
+            selection_context=selection_context,
+        )
         return {
-            "reply": "Added the new position to the overlay store.",
+            "reply": f"I added a new position for {vessel_name} and refreshed the track.",
             "action": "SHOW_TRACK",
             "payload": {
                 "mmsi": subject_mmsi,
@@ -128,9 +148,14 @@ def run_agent_query(
             return clarify_missing_subject()
 
         candidate = get_merge_candidate(subject_mmsi)
+        detail = get_ship_detail(subject_mmsi)
+        vessel_name = vessel_label(
+            identity=detail["identity"] if detail else None,
+            selection_context=selection_context,
+        )
         if candidate is None:
             return {
-                "reply": "I did not find any duplicate positions to merge for the selected vessel.",
+                "reply": f"I did not find any duplicate positions to merge for {vessel_name}.",
                 "action": None,
                 "payload": None,
             }
@@ -140,13 +165,13 @@ def run_agent_query(
         )
         if result and result.get("conflict_type"):
             return {
-                "reply": "These positions conflict on timestamp within 30 seconds of each other. Most recent wins by default.",
+                "reply": f"I found a timestamp conflict for {vessel_name}. Most recent wins by default.",
                 "action": "SHOW_CONFLICT",
                 "payload": result | {"mmsi": subject_mmsi},
             }
 
         return {
-            "reply": "Merged the duplicate positions and refreshed the track.",
+            "reply": f"I merged the duplicate positions for {vessel_name} and refreshed the track.",
             "action": "SHOW_TRACK",
             "payload": {
                 "mmsi": subject_mmsi,
@@ -155,23 +180,37 @@ def run_agent_query(
         }
 
     if is_edit_query(normalized):
+        vessel_name = vessel_label(selection_context=selection_context)
         return {
-            "reply": "Which position should I edit? Select a vessel first, then provide the position identifier or updated coordinates.",
+            "reply": f"Which position should I edit for {vessel_name}? Give me the position identifier or updated coordinates.",
             "action": None,
             "payload": None,
         }
 
     if is_delete_query(normalized):
+        vessel_name = vessel_label(selection_context=selection_context)
         return {
-            "reply": "Which position should I delete from this track? I need a specific position identifier before I proceed.",
+            "reply": f"Which position should I delete for {vessel_name}? I need a specific position identifier before I proceed.",
             "action": None,
             "payload": None,
         }
 
-    if should_route_to_sql(normalized, selection_context, chat_history):
+    if should_route_to_sql(
+        normalized, selection_context, chat_history, conversation_memory
+    ):
         try:
-            resolved_question = resolve_analytics_question(text, chat_history)
-            return run_sql_analytics(resolved_question, selection_context, chat_history)
+            resolved_question = resolve_analytics_question(
+                text,
+                selection_context,
+                chat_history,
+                conversation_memory,
+            )
+            return run_sql_analytics(
+                resolved_question,
+                selection_context,
+                chat_history,
+                conversation_memory,
+            )
         except SQLServiceError as exc:
             return {
                 "reply": f"I could not complete that analytics query: {exc}",
@@ -180,20 +219,25 @@ def run_agent_query(
             }
 
     return {
-        "reply": "I can identify a vessel, show its 24 hour track, list destinations, or help with a merge conflict.",
+        "reply": "I can identify a ship, show its last 24 hours, list recent destinations, or help with a merge conflict.",
         "action": None,
         "payload": {"chat_history_count": len((chat_history or [])[-6:])},
     }
 
 
 def resolve_subject_mmsi(
-    text: str, selection_context: dict[str, Any] | None
+    text: str,
+    selection_context: dict[str, Any] | None,
+    conversation_memory: dict[str, Any] | None,
 ) -> int | None:
     explicit = re.search(r"\b(\d{9})\b", text)
     if explicit:
         return int(explicit.group(1))
     if selection_context and selection_context.get("mmsi"):
         return int(selection_context["mmsi"])
+    remembered_vessel = (conversation_memory or {}).get("active_vessel") or {}
+    if remembered_vessel.get("mmsi"):
+        return int(remembered_vessel["mmsi"])
     return None
 
 
@@ -218,7 +262,11 @@ def extract_destination_name(text: str) -> str | None:
 
 def resolve_followup_destination(
     chat_history: list[dict[str, Any]] | None,
+    conversation_memory: dict[str, Any] | None,
 ) -> str | None:
+    remembered_destination = (conversation_memory or {}).get("last_destination")
+    if remembered_destination:
+        return remembered_destination
     if not chat_history:
         return None
     for entry in chat_history:
@@ -238,7 +286,7 @@ def format_time(timestamp: str | None) -> str:
 
 def clarify_missing_subject() -> dict[str, Any]:
     return {
-        "reply": "Which vessel should I use? Select one on the map or say the MMSI.",
+        "reply": "Which ship should I use? Select one on the map or tell me its MMSI.",
         "action": None,
         "payload": None,
     }
@@ -246,10 +294,25 @@ def clarify_missing_subject() -> dict[str, Any]:
 
 def not_found_reply(mmsi: int) -> dict[str, Any]:
     return {
-        "reply": f"I could not find vessel {mmsi}. Select another ship or verify the MMSI.",
+        "reply": f"I could not find a ship with MMSI {mmsi}. Select another ship or verify the MMSI.",
         "action": None,
         "payload": None,
     }
+
+
+def vessel_label(
+    identity: dict[str, Any] | None = None,
+    selection_context: dict[str, Any] | None = None,
+    conversation_memory: dict[str, Any] | None = None,
+) -> str:
+    if identity and identity.get("name"):
+        return identity["name"]
+    if selection_context and selection_context.get("name"):
+        return selection_context["name"]
+    remembered_vessel = (conversation_memory or {}).get("active_vessel") or {}
+    if remembered_vessel.get("name"):
+        return remembered_vessel["name"]
+    return "the selected vessel"
 
 
 def is_identity_query(text: str) -> bool:
@@ -290,6 +353,7 @@ def should_route_to_sql(
     text: str,
     selection_context: dict[str, Any] | None,
     chat_history: list[dict[str, Any]] | None,
+    conversation_memory: dict[str, Any] | None,
 ) -> bool:
     analytics_keywords = {
         "been to",
@@ -311,18 +375,49 @@ def should_route_to_sql(
         return True
     if selection_context and chat_history:
         return text in {"when", "when?", "how many", "how many times?"}
+    if conversation_memory and text in {
+        "when",
+        "when?",
+        "how many",
+        "how many times?",
+        "what about that?",
+        "what about the previous one?",
+        "what about the last one?",
+        "show that again",
+    }:
+        return True
     return False
 
 
 def resolve_analytics_question(
-    text: str, chat_history: list[dict[str, Any]] | None
+    text: str,
+    selection_context: dict[str, Any] | None,
+    chat_history: list[dict[str, Any]] | None,
+    conversation_memory: dict[str, Any] | None,
 ) -> str:
     normalized = text.strip().lower()
-    destination_name = resolve_followup_destination(chat_history)
+    destination_name = resolve_followup_destination(chat_history, conversation_memory)
+    vessel_name = (selection_context or {}).get("name") or (
+        (conversation_memory or {}).get("active_vessel") or {}
+    ).get("name")
+
     if normalized in {"when", "when?"} and destination_name:
         return f"When was this ship at {destination_name}?"
     if normalized in {"how many", "how many times?"} and destination_name:
         return f"How many times has this ship been to {destination_name}?"
+    if normalized in {
+        "what about that?",
+        "what about the previous one?",
+        "what about the last one?",
+        "show that again",
+    }:
+        previous_question = (conversation_memory or {}).get("last_analytics_question")
+        if previous_question:
+            return previous_question
+    if normalized in {"what was the max?", "what was the maximum?"}:
+        if vessel_name:
+            return f"What was the maximum speed for {vessel_name}?"
+        return "What was the maximum speed for this ship?"
     return text
 
 
